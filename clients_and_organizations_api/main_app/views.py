@@ -133,12 +133,13 @@ class BillsViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
         bills_data = utils.get_bills_data(file_obj)
         bills = []
         for bill in bills_data:
-            client_name = bill.get("client_name")
-            organization_name = bill.get("client_org")
-            client_obj = Client.objects.filter(name=client_name)
+            # TODO:
+            #  В ТЗ это явно не описано, поэтому я решил сделать так:
+            #  Если объекта клиента и/или объекта организации не существуют в БД, то мы пропускаем данную строчку счета.
+            client_obj = Client.objects.filter(name=bill.get("client_name"))
             if not client_obj.exists():
                 continue
-            organization_obj = Organization.objects.filter(name=organization_name)
+            organization_obj = Organization.objects.filter(name=bill.get("client_org"))
             if not organization_obj.exists():
                 continue
 
@@ -147,8 +148,6 @@ class BillsViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
                 organization_obj.update(fraud_weight=F('fraud_weight') + 1)
 
             service_classificator = utils.service_classificator()
-            client_obj = client_obj.first()
-            organization_obj = organization_obj.first()
             bills.append(
                 Bill(
                     number=bill.get("№"),
@@ -158,8 +157,8 @@ class BillsViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
                     fraud_score=fraud_score,
                     service_class=service_classificator.get("service_class"),
                     service_name=service_classificator.get("service_name"),
-                    client=client_obj,
-                    organization=organization_obj,
+                    client=client_obj.first(),
+                    organization=organization_obj.first(),
                 )
             )
         Bill.objects.bulk_create(bills)
