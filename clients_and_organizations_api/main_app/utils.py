@@ -1,10 +1,11 @@
+import datetime
 import random
-from abc import ABC
 from typing import TypedDict, List, Dict, Union
 
 import pandas as pd
 from django.core.files.uploadedfile import InMemoryUploadedFile
 from pandas import Timestamp
+from pydantic import BaseModel, validator
 
 
 class BillsData(TypedDict):
@@ -118,7 +119,78 @@ def get_clients_and_organizations_data(xlsx_obj: InMemoryUploadedFile) -> Client
     return dict(clients_data=clients_data, organizations_data=organizations_data)
 
 
-def get_bills_obj_and_data(xlsx_obj: InMemoryUploadedFile) -> BillsData:
+def prepare_bill(bill_type: int, bill_data: Dict) -> Dict:
+    """
+    Функция для приведения разных структур словаря данных о счёте к общей структуре
+
+    Параметры
+    ---------
+    bill_type: int
+        список заголовков xlsx файла
+    bill_data: Dict
+        словарь с данными о счёте
+
+    Возвращаемое значение
+    ---------------------
+    new_bill_data: Dict
+        словарь с данными о счете с общей структурой
+    """
+    new_bill_data = {
+        "client_name": None,
+        "client_org": None,
+        "number": None,
+        "summ": None,
+        "date": None,
+        "service": None,
+    }
+    if bill_type == 1:
+        new_bill_data["client_name"] = bill_data.get("client_name")
+        new_bill_data["client_org"] = bill_data.get("client_org")
+        new_bill_data["number"] = bill_data.get("№")
+        new_bill_data["summ"] = bill_data.get("sum")
+        new_bill_data["date"] = bill_data.get("date")
+        new_bill_data["service"] = bill_data.get("service")
+    elif bill_type == 2:
+        new_bill_data["client_name"] = bill_data.get("client")
+        new_bill_data["client_org"] = bill_data.get("organization")
+        new_bill_data["number"] = bill_data.get("bill_number")
+        new_bill_data["summ"] = bill_data.get("total_sum")
+        new_bill_data["date"] = bill_data.get("created_date")
+        new_bill_data["service"] = bill_data.get("service_name")
+    else:
+        new_bill_data["client_name"] = bill_data.get("client_code")
+        new_bill_data["client_org"] = bill_data.get("client_org_name")
+        new_bill_data["number"] = bill_data.get("number")
+        new_bill_data["summ"] = bill_data.get("total")
+        new_bill_data["date"] = bill_data.get("created")
+        new_bill_data["service"] = bill_data.get("service")
+    return new_bill_data
+
+
+def get_bill_type(header: List) -> int:
+    """
+    Функция для определения типа структуры клиента
+
+    Параметры
+    ---------
+    header: List
+        список заголовков xlsx файла
+
+    Возвращаемое значение
+    ---------------------
+    bill_type: int
+        номер типа структуры клиента
+    """
+    if "client_name" in header and "client_org" in header:
+        bill_type = 1
+    elif "client" in header and "organization" in header:
+        bill_type = 2
+    else:
+        bill_type = 3
+    return bill_type
+
+
+def get_bills_data(xlsx_obj: InMemoryUploadedFile) -> List[Dict]:
     """
     Функция для получения данных счетов из xlsx файла
 
@@ -129,272 +201,55 @@ def get_bills_obj_and_data(xlsx_obj: InMemoryUploadedFile) -> BillsData:
 
     Возвращаемое значение
     ---------------------
-    dict
-        словарь с данными о счетах
+    List[Dict]
+        список словарей с данными о счетах
     """
     header = pd.read_excel(xlsx_obj, nrows=0).columns.to_list()
-    if "client_name" in header and "client_org" in header:
-        bill_obj = BillObj1
-    elif "client" in header and "organization" in header:
-        bill_obj = BillObj2
-    else:
-        bill_obj = BillObj3
+    bill_type = get_bill_type(header=header)
     bills_data = pd.read_excel(xlsx_obj)
+    bills_data = bills_data.astype(object).where(pd.notnull(bills_data), None)
     bills_data = bills_data.to_dict('records')
-    return {"bill_obj": bill_obj, "bills_data": bills_data}
+    bills_data = [prepare_bill(bill_type=bill_type, bill_data=bill) for bill in bills_data]
+    return bills_data
 
 
-class AbstractBillObj(ABC):
-    def __init__(self, data: Dict, idx_row: int = None) -> None:
-        self._data = data
-        self._idx_row = idx_row
-        self._obj_is_valid = True
-        self._errors = []
-        self._validated_data = None
+class BillObjModel(BaseModel):
+    """
+    Pydantic модель для валидации данных о счете
+    """
+    client_name: str
+    client_org: str
+    number: int
+    summ: Union[int, float]
+    date: Union[Timestamp, datetime.datetime, datetime.date]
+    service: str
 
-    def is_valid(self) -> bool:
-        pass
+    @validator('client_name')
+    def validate_client_name(cls, v):
+        assert len(v.strip()) != 0, 'value must be not empty'
+        return v
 
-    def eval(self) -> None:
-        pass
+    @validator('client_org')
+    def validate_client_org(cls, v):
+        assert len(v.strip()) != 0, 'value must be not empty'
+        return v
 
-    def errors(self) -> Dict:
-        pass
+    @validator('service')
+    def validate_service(cls, v):
+        assert len(v.strip().strip("-")) != 0, 'value must be not empty'
+        return v
 
-    def validated_data(self) -> Dict:
-        pass
+    @validator('date', pre=True)
+    def validate_date(cls, v):
+        assert isinstance(v, (Timestamp, datetime.datetime, datetime.date)), 'value must be date'
+        assert cls.valid_date(v), 'value must be date and contains year, month and day'
+        return v
 
-
-class BaseBillObj(AbstractBillObj):
-    def __init__(self, data: Dict) -> None:
-        super().__init__(data)
-
-    def is_valid(self) -> bool:
-        self.eval()
-        return self._obj_is_valid
-
-    def eval(self) -> None:
-        pass
-
-    def valid_date(self, date_obj) -> bool:
-        date = date_obj.date()
-        if all((hasattr(date, 'year'), hasattr(date, 'month'), hasattr(date, 'day'))):
+    @classmethod
+    def valid_date(cls, date_obj: Timestamp) -> bool:
+        datetime_obj = date_obj.date()
+        if all(
+                (hasattr(datetime_obj, 'year'), hasattr(datetime_obj, 'month'), hasattr(datetime_obj, 'day'))
+        ):
             return True
         return False
-
-    @property
-    def errors(self) -> Union[List[Dict], None]:
-        if not self._obj_is_valid:
-            return self._errors
-
-    @property
-    def validated_data(self) -> Union[Dict, None]:
-        if self._obj_is_valid:
-            return self._validated_data
-
-
-class BillObj1(BaseBillObj):
-    def __init__(self, data: Dict) -> None:
-        super().__init__(data)
-
-    def eval(self) -> None:
-        client_name = self._data.get("client_name")
-        client_org = self._data.get("client_org")
-        number = self._data.get("№")
-        summ = self._data.get("sum")
-        date = self._data.get("date")
-        service = self._data.get("service")
-        self._validated_data = {
-            "client_name": client_name,
-            "client_org": client_org,
-            "number": number,
-            "summ": summ,
-            "date": date,
-            "service": service,
-        }
-        if not isinstance(summ, (int, float)):
-            self._obj_is_valid = False
-            self._errors.append(
-                {
-                    "field": "sum",
-                    "message": "Поле sum должно быть числом",
-                }
-            )
-        if not isinstance(number, int):
-            self._obj_is_valid = False
-            self._errors.append(
-                {
-                    "field": "№",
-                    "message": "Поле № должно быть числом",
-                }
-            )
-        if not isinstance(service, str) or len(service.strip().strip("-")) == 0:
-            self._obj_is_valid = False
-            self._errors.append(
-                {
-                    "field": "service",
-                    "message": "Поле service должно быть непустым (пусто так же считается, если вместо текста знак “-”)",
-                }
-            )
-        if client_name is None or not isinstance(client_name, str) or not client_name.strip():
-            self._obj_is_valid = False
-            self._errors.append(
-                {
-                    "field": "client_name",
-                    "message": "Поле client_name должно быть непустым",
-                }
-            )
-        if client_org is None or not isinstance(client_org, str) or not client_org.strip():
-            self._obj_is_valid = False
-            self._errors.append(
-                {
-                    "field": "client_org",
-                    "message": "Поле client_org должно быть непустым",
-                }
-            )
-        if date is None or not isinstance(date, Timestamp) or not self.valid_date(date):
-            self._obj_is_valid = False
-            self._errors.append(
-                {
-                    "field": "date",
-                    "message": "Поле date должно являться датой и содержать день, месяц и год",
-                }
-            )
-
-
-class BillObj2(BaseBillObj):
-    def __init__(self, data: Dict) -> None:
-        super().__init__(data)
-
-    def eval(self) -> None:
-        client_name = self._data.get("client")
-        client_org = self._data.get("organization")
-        number = self._data.get("bill_number")
-        summ = self._data.get("total_sum")
-        date = self._data.get("created_date")
-        service = self._data.get("service_name")
-        self._validated_data = {
-            "client_name": client_name,
-            "client_org": client_org,
-            "number": number,
-            "summ": summ,
-            "date": date,
-            "service": service,
-        }
-        if not isinstance(summ, (int, float)):
-            self._obj_is_valid = False
-            self._errors.append(
-                {
-                    "field": "total_sum",
-                    "message": "Поле total_sum должно быть числом",
-                }
-            )
-        if not isinstance(number, int):
-            self._obj_is_valid = False
-            self._errors.append(
-                {
-                    "field": "bill_number",
-                    "message": "Поле bill_number должно быть числом",
-                }
-            )
-        if not isinstance(service, str) or len(service.strip().strip("-")) == 0:
-            self._obj_is_valid = False
-            self._errors.append(
-                {
-                    "field": "service_name",
-                    "message": "Поле service_name должно быть непустым (пусто так же считается, если вместо текста знак “-”)",
-                }
-            )
-        if client_name is None or not isinstance(client_name, str) or not client_name.strip():
-            self._obj_is_valid = False
-            self._errors.append(
-                {
-                    "field": "client",
-                    "message": "Поле client должно быть непустым",
-                }
-            )
-        if client_org is None or not isinstance(client_org, str) or not client_org.strip():
-            self._obj_is_valid = False
-            self._errors.append(
-                {
-                    "field": "organization",
-                    "message": "Поле organization должно быть непустым",
-                }
-            )
-        if date is None or not isinstance(date, Timestamp) or not self.valid_date(date):
-            self._obj_is_valid = False
-            self._errors.append(
-                {
-                    "field": "created_date",
-                    "message": "Поле created_date должно являться датой и содержать день, месяц и год",
-                }
-            )
-
-
-class BillObj3(BaseBillObj):
-    def __init__(self, data: Dict) -> None:
-        super().__init__(data)
-
-    def eval(self) -> None:
-        client_name = self._data.get("client_code")
-        client_org = self._data.get("client_org_name")
-        number = self._data.get("number")
-        summ = self._data.get("total")
-        date = self._data.get("created")
-        service = self._data.get("service")
-        self._validated_data = {
-            "client_name": client_name,
-            "client_org": client_org,
-            "number": number,
-            "summ": summ,
-            "date": date,
-            "service": service,
-        }
-        if not isinstance(summ, (int, float)):
-            self._obj_is_valid = False
-            self._errors.append(
-                {
-                    "field": "total",
-                    "message": "Поле total должно быть числом",
-                }
-            )
-        if not isinstance(number, int):
-            self._obj_is_valid = False
-            self._errors.append(
-                {
-                    "field": "number",
-                    "message": "Поле number должно быть числом",
-                }
-            )
-        if not isinstance(service, str) or len(service.strip().strip("-")) == 0:
-            self._obj_is_valid = False
-            self._errors.append(
-                {
-                    "field": "service",
-                    "message": "Поле service должно быть непустым (пусто так же считается, если вместо текста знак “-”)",
-                }
-            )
-        if client_name is None or not isinstance(client_name, str) or not client_name.strip():
-            self._obj_is_valid = False
-            self._errors.append(
-                {
-                    "field": "client_code",
-                    "message": "Поле client_code должно быть непустым",
-                }
-            )
-        if client_org is None or not isinstance(client_org, str) or not client_org.strip():
-            self._obj_is_valid = False
-            self._errors.append(
-                {
-                    "field": "client_org_name",
-                    "message": "Поле client_org_name должно быть непустым",
-                }
-            )
-        if date is None or not isinstance(date, Timestamp) or not self.valid_date(date):
-            self._obj_is_valid = False
-            self._errors.append(
-                {
-                    "field": "created",
-                    "message": "Поле created должно являться датой и содержать день, месяц и год",
-                }
-            )

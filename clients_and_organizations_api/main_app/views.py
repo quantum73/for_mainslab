@@ -1,6 +1,7 @@
 import logging
 
 from django.db.models import Count, Sum, F
+from pydantic import ValidationError
 from rest_framework import viewsets, status, mixins
 from rest_framework.decorators import action
 from rest_framework.exceptions import UnsupportedMediaType
@@ -10,6 +11,7 @@ from main_app import models
 from main_app import utils
 from main_app.models import Client, Organization, Bill
 from main_app.serializers import ClientSerializer, BillSerializer
+from main_app.utils import BillObjModel
 
 my_logger = logging.getLogger("my_logger")
 
@@ -134,37 +136,36 @@ class BillsViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
         if not file_obj.name.endswith(".xlsx"):
             raise UnsupportedMediaType(file_obj.content_type, detail="File must be .xlsx")
 
-        bills_type_and_data = utils.get_bills_obj_and_data(file_obj)
-        bill_obj = bills_type_and_data.get("bill_obj")
-        bills_data = bills_type_and_data.get("bills_data")
+        bills_data = utils.get_bills_data(file_obj)
         bills = []
-        for bill in bills_data:
-            b = bill_obj(bill)
-            if b.is_valid():
-                validated_bill_data = b.validated_data
-                client_name = validated_bill_data.get("client_name")
-                client_org = validated_bill_data.get("client_org")
-                client_obj = Client.objects.filter(name=client_name)
+        for idx, bill in enumerate(bills_data, start=1):
+            prefix = f"Строка файла xlsx #{idx} "
+            try:
+                bill_obj = BillObjModel(**bill)
+            except ValidationError as e:
+                my_logger.error(f'Строка #{idx} | {e.errors()}')
+            else:
+                client_obj = Client.objects.filter(name=bill_obj.client_name)
                 if not client_obj.exists():
-                    my_logger.warning(f"Клиента {client_name} нет в базе")
+                    my_logger.warning(f"{prefix} | Клиента {bill_obj.client_name} нет в базе")
                     continue
-                organization_obj = Organization.objects.filter(name=client_org)
+                organization_obj = Organization.objects.filter(name=bill_obj.client_org)
                 if not organization_obj.exists():
-                    my_logger.warning(f"Организации {client_org} нет в базе")
+                    my_logger.warning(f"{prefix} | Организации {bill_obj.client_org} нет в базе")
                     continue
 
                 fraud_score = utils.fraud_detector()
                 if fraud_score >= 0.9:
-                    my_logger.info(f"Обновляем поле fraud_weight на 1 у организации {client_org}")
+                    my_logger.info(f"Обновляем поле fraud_weight на 1 у организации {bill_obj.client_org}")
                     organization_obj.update(fraud_weight=F('fraud_weight') + 1)
 
                 service_classificator = utils.service_classificator()
                 bills.append(
                     Bill(
-                        number=validated_bill_data.get("number"),
-                        summ=validated_bill_data.get("summ"),
-                        date=validated_bill_data.get("date"),
-                        service=validated_bill_data.get("service"),
+                        number=bill_obj.number,
+                        summ=bill_obj.summ,
+                        date=bill_obj.date,
+                        service=bill_obj.service,
                         fraud_score=fraud_score,
                         service_class=service_classificator.get("service_class"),
                         service_name=service_classificator.get("service_name"),
@@ -172,8 +173,6 @@ class BillsViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
                         organization=organization_obj.first(),
                     )
                 )
-            else:
-                my_logger.error(b.errors)
 
         Bill.objects.bulk_create(bills)
         return Response(status=status.HTTP_201_CREATED)
