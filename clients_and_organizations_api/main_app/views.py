@@ -1,3 +1,5 @@
+import logging
+
 from django.db.models import Count, Sum, F
 from rest_framework import viewsets, status, mixins
 from rest_framework.decorators import action
@@ -8,6 +10,8 @@ from main_app import models
 from main_app import utils
 from main_app.models import Client, Organization, Bill
 from main_app.serializers import ClientSerializer, BillSerializer
+
+my_logger = logging.getLogger("my_logger")
 
 
 class ClientsViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
@@ -130,37 +134,46 @@ class BillsViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
         if not file_obj.name.endswith(".xlsx"):
             raise UnsupportedMediaType(file_obj.content_type, detail="File must be .xlsx")
 
-        bills_data = utils.get_bills_data(file_obj)
+        bills_type_and_data = utils.get_bills_obj_and_data(file_obj)
+        bill_obj = bills_type_and_data.get("bill_obj")
+        bills_data = bills_type_and_data.get("bills_data")
         bills = []
         for bill in bills_data:
-            # TODO:
-            #  В ТЗ это явно не описано, поэтому я решил сделать так:
-            #  Если объекта клиента и/или объекта организации не существуют в БД, то мы пропускаем данную строчку счета.
-            client_obj = Client.objects.filter(name=bill.get("client_name"))
-            if not client_obj.exists():
-                continue
-            organization_obj = Organization.objects.filter(name=bill.get("client_org"))
-            if not organization_obj.exists():
-                continue
+            b = bill_obj(bill)
+            if b.is_valid():
+                validated_bill_data = b.validated_data
+                client_name = validated_bill_data.get("client_name")
+                client_org = validated_bill_data.get("client_org")
+                client_obj = Client.objects.filter(name=client_name)
+                if not client_obj.exists():
+                    my_logger.warning(f"Клиента {client_name} нет в базе")
+                    continue
+                organization_obj = Organization.objects.filter(name=client_org)
+                if not organization_obj.exists():
+                    my_logger.warning(f"Организации {client_org} нет в базе")
+                    continue
 
-            fraud_score = utils.fraud_detector()
-            if fraud_score >= 0.9:
-                organization_obj.update(fraud_weight=F('fraud_weight') + 1)
+                fraud_score = utils.fraud_detector()
+                if fraud_score >= 0.9:
+                    my_logger.info(f"Обновляем поле fraud_weight на 1 у организации {client_org}")
+                    organization_obj.update(fraud_weight=F('fraud_weight') + 1)
 
-            service_classificator = utils.service_classificator()
-            bills.append(
-                Bill(
-                    number=bill.get("№"),
-                    summ=bill.get("sum"),
-                    date=bill.get("date"),
-                    service=bill.get("service"),
-                    fraud_score=fraud_score,
-                    service_class=service_classificator.get("service_class"),
-                    service_name=service_classificator.get("service_name"),
-                    client=client_obj.first(),
-                    organization=organization_obj.first(),
+                service_classificator = utils.service_classificator()
+                bills.append(
+                    Bill(
+                        number=validated_bill_data.get("number"),
+                        summ=validated_bill_data.get("summ"),
+                        date=validated_bill_data.get("date"),
+                        service=validated_bill_data.get("service"),
+                        fraud_score=fraud_score,
+                        service_class=service_classificator.get("service_class"),
+                        service_name=service_classificator.get("service_name"),
+                        client=client_obj.first(),
+                        organization=organization_obj.first(),
+                    )
                 )
-            )
-        Bill.objects.bulk_create(bills)
+            else:
+                my_logger.error(b.errors)
 
+        Bill.objects.bulk_create(bills)
         return Response(status=status.HTTP_201_CREATED)

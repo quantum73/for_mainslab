@@ -40,7 +40,7 @@ class Bill(models.Model):
     service = models.TextField(verbose_name="service_description")
     fraud_score = models.FloatField(
         validators=[MinValueValidator(0.0), MaxValueValidator(1.0)],
-        verbose_name="fraud_weight"
+        verbose_name="fraud_score"
     )
     service_class = models.IntegerField(validators=[MinValueValidator(0)], verbose_name="service_class")
     service_name = models.CharField(max_length=128, verbose_name="service_name")
